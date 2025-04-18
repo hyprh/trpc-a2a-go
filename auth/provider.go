@@ -65,8 +65,8 @@ type ClientProvider interface {
 	Provider
 	// ConfigureClient configures an HTTP client with authentication.
 	ConfigureClient(client *http.Client) *http.Client
-	// TransformRequest transforms the request before it is sent.
-	FillRequestToken(req *http.Request) (*http.Request, error)
+	// FillRequestKey fills the request with a JWT token.
+	FillRequestKey(req *http.Request) (*http.Request, error)
 }
 
 // JWTAuthProvider authenticates requests using JWT.
@@ -198,8 +198,8 @@ func (p *JWTAuthProvider) ConfigureClient(client *http.Client) *http.Client {
 	return &newClient
 }
 
-// FillRequestToken fills the request with a JWT token.
-func (p *JWTAuthProvider) FillRequestToken(req *http.Request) (*http.Request, error) {
+// FillRequestKey fills the request with a JWT token.
+func (p *JWTAuthProvider) FillRequestKey(req *http.Request) (*http.Request, error) {
 	token, err := p.CreateToken("client", nil)
 	if err != nil {
 		return nil, err
@@ -300,8 +300,8 @@ func (p *APIKeyAuthProvider) ConfigureClient(client *http.Client) *http.Client {
 	return &newClient
 }
 
-// FillRequestAPIKey fills the request with an API key.
-func (p *APIKeyAuthProvider) FillRequestAPIKey(req *http.Request) (*http.Request, error) {
+// FillRequestKey fills the request with an API key.
+func (p *APIKeyAuthProvider) FillRequestKey(req *http.Request) (*http.Request, error) {
 	if p.clientAPIKey == "" {
 		return req, nil
 	}
@@ -422,8 +422,8 @@ func (p *OAuth2AuthProvider) ConfigureClient(client *http.Client) *http.Client {
 	return client
 }
 
-// FillRequestToken fills the request with an OAuth2 token.
-func (p *OAuth2AuthProvider) FillRequestToken(req *http.Request) (*http.Request, error) {
+// FillRequestKey fills the request with an OAuth2 token.
+func (p *OAuth2AuthProvider) FillRequestKey(req *http.Request) (*http.Request, error) {
 	return req, nil
 }
 

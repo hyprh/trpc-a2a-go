@@ -164,9 +164,12 @@ func (c *A2AClient) StreamTask(
 	}
 	log.Debugf("A2A Client Stream Request -> Method: %s, ID: %v, URL: %s", request.Method, request.ID, targetURL)
 	// Make the initial request to establish the stream.
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpReqHandler(ctx, c.httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("a2aClient.StreamTask: http request failed: %w", err)
+	}
+	if resp == nil || resp.Body == nil {
+		return nil, fmt.Errorf("a2aClient.StreamTask: unexpected nil response")
 	}
 	// Check for non-success HTTP status codes.
 	// For SSE, a successful setup should result in 200 OK.
@@ -374,10 +377,14 @@ func (c *A2AClient) doRequest(
 		req.Header.Set("User-Agent", c.userAgent)
 	}
 	log.Debugf("A2A Client Request -> Method: %s, ID: %v, URL: %s", request.Method, request.ID, targetURL)
-	resp, err := c.httpReqHandler(ctx, c.httpClient, targetURL, reqBody, req.Header)
+	resp, err := c.httpReqHandler(ctx, c.httpClient, req)
 	if err != nil {
 		return nil, fmt.Errorf("a2aClient.doRequest: http request failed: %w", err)
 	}
+	if resp == nil || resp.Body == nil {
+		return nil, fmt.Errorf("a2aClient.doRequest: unexpected nil response")
+	}
+
 	// Ensure body is always closed.
 	defer resp.Body.Close()
 	// Read the body first for potential error reporting.

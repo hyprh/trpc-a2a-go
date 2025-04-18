@@ -34,10 +34,11 @@ const (
 // A2AClient provides methods to interact with an A2A agent server.
 // It handles making HTTP requests and encoding/decoding JSON-RPC messages.
 type A2AClient struct {
-	baseURL      *url.URL            // Parsed base URL of the agent server.
-	httpClient   *http.Client        // Underlying HTTP client.
-	userAgent    string              // User-Agent header string.
-	authProvider auth.ClientProvider // Authentication provider.
+	baseURL        *url.URL            // Parsed base URL of the agent server.
+	httpClient     *http.Client        // Underlying HTTP client.
+	userAgent      string              // User-Agent header string.
+	authProvider   auth.ClientProvider // Authentication provider.
+	httpReqHandler HttpReqHandler      // Custom HTTP request handler.
 }
 
 // NewA2AClient creates a new A2A client targeting the specified agentURL.
@@ -58,7 +59,8 @@ func NewA2AClient(agentURL string, opts ...Option) (*A2AClient, error) {
 		httpClient: &http.Client{
 			Timeout: defaultTimeout,
 		},
-		userAgent: defaultUserAgent,
+		userAgent:      defaultUserAgent,
+		httpReqHandler: httpRequestHandler,
 	}
 	// Apply functional options.
 	for _, opt := range opts {
@@ -372,7 +374,7 @@ func (c *A2AClient) doRequest(
 		req.Header.Set("User-Agent", c.userAgent)
 	}
 	log.Debugf("A2A Client Request -> Method: %s, ID: %v, URL: %s", request.Method, request.ID, targetURL)
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.httpReqHandler(ctx, c.httpClient, targetURL, reqBody, req.Header)
 	if err != nil {
 		return nil, fmt.Errorf("a2aClient.doRequest: http request failed: %w", err)
 	}
@@ -486,4 +488,29 @@ func (c *A2AClient) GetPushNotification(
 	}
 
 	return config, nil
+}
+
+func httpRequestHandler(
+	ctx context.Context,
+	client *http.Client,
+	req *http.Request,
+) (*http.Response, error) {
+	var err error
+	var resp *http.Response
+	defer func() {
+		if err != nil && resp != nil {
+			resp.Body.Close()
+		}
+	}()
+
+	if client == nil {
+		return nil, fmt.Errorf("a2aClient.httpRequestHandler: http client is nil")
+	}
+
+	resp, err = client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("a2aClient.httpRequestHandler: http request failed: %w", err)
+	}
+
+	return resp, nil
 }

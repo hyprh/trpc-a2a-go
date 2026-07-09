@@ -24,56 +24,38 @@ import (
 	"trpc.group/trpc-go/trpc-a2a-go/v2/taskmanager/memory"
 )
 
-// simpleMessageProcessor implements the taskmanager.MessageProcessor interface.
-type simpleMessageProcessor struct{}
+// simpleProcessor implements the proposed taskmanager.Processor contract:
+// emit through the framework-owned handle and return. No channel to build, no
+// goroutine to spawn, no Close to remember.
+type simpleProcessor struct{}
 
-// ProcessMessage processes one message and reports progress as events. There is no
-// streaming/non-streaming branch: for message/send the framework drains the
-// events and answers with the final task snapshot (or the reply message); for
-// message/stream it forwards them as they happen.
-func (e *simpleMessageProcessor) ProcessMessage(
+// Process reverses the input and completes the task. One code path serves
+// message/send and message/stream; the framework owns the round and closes the
+// stream when Process returns.
+func (p *simpleProcessor) Process(
 	ctx context.Context,
 	ec *taskmanager.ExecContext,
-) (<-chan protocol.StreamEvent, error) {
-	out := make(chan protocol.StreamEvent, 4)
-	go func() {
-		defer close(out)
+	h *taskmanager.TaskHandle,
+) error {
+	text := extractText(ec.Message)
+	if text == "" {
+		// A pure-message reply: no task comes into existence for this round.
+		return h.Reply(taskmanager.ReplyText("input message must contain text."))
+	}
 
-		text := extractText(ec.Message)
-		if text == "" {
-			// A pure-message reply: no task comes into existence for this round.
-			out <- taskmanager.ReplyText("input message must contain text.")
-			return
-		}
+	log.Infof("Processing message with input: %s", text)
 
-		log.Infof("Processing message with input: %s", text)
+	// The framework creates the task on this first task event and stamps the IDs.
+	h.Working(nil)
+	result := reverseString(text)
+	h.AddArtifact(*protocol.NewArtifactWithID(
+		stringPtr("Reversed Text"),
+		stringPtr("The input text reversed"),
+		[]*protocol.Part{protocol.NewTextPart(result)},
+	), true)
 
-		// TaskID/ContextID on events may be left empty: the framework stamps
-		// them from the ExecContext and creates the task on this first event.
-		out <- &protocol.TaskStatusUpdateEvent{
-			Status: protocol.TaskStatus{State: protocol.TaskStateWorking},
-		}
-
-		result := reverseString(text)
-		lastChunk := true
-		out <- &protocol.TaskArtifactUpdateEvent{
-			Artifact: *protocol.NewArtifactWithID(
-				stringPtr("Reversed Text"),
-				stringPtr("The input text reversed"),
-				[]*protocol.Part{protocol.NewTextPart(result)},
-			),
-			LastChunk: &lastChunk,
-		}
-
-		// A terminal status ends the round.
-		out <- &protocol.TaskStatusUpdateEvent{
-			Status: protocol.TaskStatus{
-				State:   protocol.TaskStateCompleted,
-				Message: taskmanager.ReplyText(fmt.Sprintf("Processed result: %s", result)),
-			},
-		}
-	}()
-	return out, nil
+	// A terminal verb ends the round; returning it reads as the conclusion.
+	return h.Complete(taskmanager.ReplyText(fmt.Sprintf("Processed result: %s", result)))
 }
 
 // extractText extracts the text content from a message.
@@ -143,7 +125,7 @@ func main() {
 
 	// Create the processor and inject it into a task manager.
 	// (redis.NewTaskManager accepts the same MessageProcessor for persistent storage.)
-	taskManager, err := memory.NewTaskManager(&simpleMessageProcessor{})
+	taskManager, err := memory.NewTaskManager(taskmanager.AsMessageProcessor(&simpleProcessor{}))
 	if err != nil {
 		log.Fatalf("Failed to create task manager: %v", err)
 	}

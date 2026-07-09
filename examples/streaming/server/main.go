@@ -32,105 +32,72 @@ import (
 	"trpc.group/trpc-go/trpc-a2a-go/v2/taskmanager/memory"
 )
 
-// streamingMessageProcessor implements the MessageProcessor interface for streaming responses.
-// This processor breaks the input text into chunks and sends them back as a stream.
-type streamingMessageProcessor struct{}
+// streamingProcessor implements the proposed taskmanager.Processor contract.
+// Note there is no goroutine, no Events(), and no Close(): the body is written
+// straight-line, and the framework runs it and closes the round when it returns.
+type streamingProcessor struct{}
 
-// ProcessMessage implements the MessageProcessor interface.
-// It breaks the input text into chunks and sends them back incrementally:
-// the work runs in a goroutine emitting on the handle while the framework
-// consumes the returned event channel live.
-func (p *streamingMessageProcessor) ProcessMessage(
+// Process breaks the input text into chunks and emits them incrementally with a
+// delay. Compare with the old MessageProcessor version: the goroutine, the
+// handle plumbing and the manual Close are all gone.
+func (p *streamingProcessor) Process(
 	ctx context.Context,
 	ec *taskmanager.ExecContext,
-) (<-chan protocol.StreamEvent, error) {
+	h *taskmanager.TaskHandle,
+) error {
 	log.Infof("Processing streaming message...")
-
-	handle := taskmanager.NewTaskHandle(ctx, ec)
 
 	// Extract text from the incoming message.
 	text := extractText(ec.Message)
 	if text == "" {
-		errMsg := "input message must contain text"
-		log.Errorf("Message processing failed: %s", errMsg)
-
 		// A pure message reply: no task comes into existence this round.
-		handle.Reply(taskmanager.ReplyText(errMsg))
-		handle.Close()
-		return handle.Events(), nil
+		return h.Reply(taskmanager.ReplyText("input message must contain text"))
 	}
 
-	// Start streaming processing in a goroutine. The framework creates the
-	// task lazily on the first task event and stamps the IDs from the
-	// ExecContext.
-	go func() {
-		defer handle.Close()
+	if err := h.Working(taskmanager.ReplyText("Starting to process your streaming data...")); err != nil {
+		return err
+	}
 
-		if err := handle.UpdateTaskState(protocol.TaskStateWorking,
-			taskmanager.ReplyText("Starting to process your streaming data...")); err != nil {
-			log.Errorf("Failed to send working event: %v", err)
-			return
+	// Split the text into chunks to simulate streaming processing.
+	chunks := splitTextIntoChunks(text, 5)
+	totalChunks := len(chunks)
+
+	for i, chunk := range chunks {
+		// Returning after a cancel (without a terminal state) lets the framework
+		// persist CANCELED on our behalf.
+		if err := ctx.Err(); err != nil {
+			log.Infof("Task %s cancelled during streaming: %v", h.TaskID(), err)
+			return nil
 		}
 
-		// Split the text into chunks to simulate streaming processing
-		chunks := splitTextIntoChunks(text, 5) // Split into chunks of about 5 characters
-		totalChunks := len(chunks)
-
-		// Process each chunk with a small delay to simulate real-time processing
-		for i, chunk := range chunks {
-			// Check for cancellation: closing without a terminal state after a
-			// cancel lets the framework persist CANCELED on our behalf.
-			if err := ctx.Err(); err != nil {
-				log.Infof("Task %s cancelled during streaming: %v", handle.TaskID(), err)
-				return
-			}
-
-			// Process the chunk (in this example, just reverse it)
-			processedChunk := reverseString(chunk)
-			progressMsg := fmt.Sprintf("Processing chunk %d of %d: %s -> %s",
-				i+1, totalChunks, chunk, processedChunk)
-
-			if err := handle.UpdateTaskState(protocol.TaskStateWorking,
-				taskmanager.ReplyText(progressMsg)); err != nil {
-				log.Errorf("Failed to send working event: %v", err)
-				return
-			}
-
-			// Create an artifact for this chunk
-			isLastChunk := (i == totalChunks-1)
-			chunkArtifact := protocol.Artifact{
-				ArtifactID:  uuid.New().String(),
-				Name:        stringPtr(fmt.Sprintf("Chunk %d of %d", i+1, totalChunks)),
-				Description: stringPtr("Streaming chunk of processed data"),
-				Parts:       []*protocol.Part{protocol.NewTextPart(processedChunk)},
-			}
-
-			if err := handle.AddArtifact(chunkArtifact, isLastChunk); err != nil {
-				log.Errorf("Failed to add artifact: %v", err)
-				return
-			}
-
-			select {
-			case <-ctx.Done():
-				log.Infof("Task %s cancelled during delay: %v", handle.TaskID(), ctx.Err())
-				return
-			case <-time.After(500 * time.Millisecond): // Simulate work with delay
-				// Continue processing
-			}
+		processedChunk := reverseString(chunk)
+		progressMsg := fmt.Sprintf("Processing chunk %d of %d: %s -> %s",
+			i+1, totalChunks, chunk, processedChunk)
+		if err := h.Working(taskmanager.ReplyText(progressMsg)); err != nil {
+			return err
 		}
 
-		// Final completion status ends the round; the message/send caller
-		// receives this final task snapshot (with its artifacts).
-		if err := handle.UpdateTaskState(protocol.TaskStateCompleted, taskmanager.ReplyText(
-			fmt.Sprintf("Completed processing all %d chunks successfully!", totalChunks))); err != nil {
-			log.Errorf("Failed to update task state: %v", err)
-			return
+		isLastChunk := (i == totalChunks-1)
+		if err := h.AddArtifact(protocol.Artifact{
+			ArtifactID:  uuid.New().String(),
+			Name:        stringPtr(fmt.Sprintf("Chunk %d of %d", i+1, totalChunks)),
+			Description: stringPtr("Streaming chunk of processed data"),
+			Parts:       []*protocol.Part{protocol.NewTextPart(processedChunk)},
+		}, isLastChunk); err != nil {
+			return err
 		}
 
-		log.Infof("Task %s streaming completed successfully.", handle.TaskID())
-	}()
+		select {
+		case <-ctx.Done():
+			log.Infof("Task %s cancelled during delay: %v", h.TaskID(), ctx.Err())
+			return nil
+		case <-time.After(500 * time.Millisecond): // Simulate work with delay.
+		}
+	}
 
-	return handle.Events(), nil
+	log.Infof("Task %s streaming completed successfully.", h.TaskID())
+	return h.Complete(taskmanager.ReplyText(
+		fmt.Sprintf("Completed processing all %d chunks successfully!", totalChunks)))
 }
 
 // extractText extracts the first text part from a message.
@@ -316,11 +283,8 @@ func main() {
 		},
 	}
 
-	// Create the MessageProcessor (streaming logic)
-	processor := &streamingMessageProcessor{}
-
-	// Create the TaskManager, injecting the processor
-	taskManager, err := memory.NewTaskManager(processor)
+	// Create the Processor (streaming logic) and bridge it onto the TaskManager.
+	taskManager, err := memory.NewTaskManager(taskmanager.AsMessageProcessor(&streamingProcessor{}))
 	if err != nil {
 		log.Fatalf("Failed to create task manager: %v", err)
 	}

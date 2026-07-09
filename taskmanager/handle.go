@@ -176,6 +176,33 @@ func (h *TaskHandle) AddArtifact(artifact protocol.Artifact, lastChunk bool) err
 	})
 }
 
+// Working moves the task to the working state — progress, not terminal.
+func (h *TaskHandle) Working(message *protocol.Message) error {
+	return h.UpdateTaskState(protocol.TaskStateWorking, message)
+}
+
+// Complete ends the round with the task completed (terminal). Returning its
+// result from Process reads as the round's conclusion: `return h.Complete(msg)`.
+func (h *TaskHandle) Complete(message *protocol.Message) error {
+	return h.UpdateTaskState(protocol.TaskStateCompleted, message)
+}
+
+// Fail ends the round with the task failed (terminal).
+func (h *TaskHandle) Fail(message *protocol.Message) error {
+	return h.UpdateTaskState(protocol.TaskStateFailed, message)
+}
+
+// Reject ends the round with the task rejected (terminal).
+func (h *TaskHandle) Reject(message *protocol.Message) error {
+	return h.UpdateTaskState(protocol.TaskStateRejected, message)
+}
+
+// RequireInput suspends the task awaiting a follow-up message (input-required);
+// the framework calls the processor again with ExecContext.Task set.
+func (h *TaskHandle) RequireInput(message *protocol.Message) error {
+	return h.UpdateTaskState(protocol.TaskStateInputRequired, message)
+}
+
 // Reply emits a direct message reply (the former pure-Message result path).
 func (h *TaskHandle) Reply(message *protocol.Message) error {
 	return h.emit(message)
